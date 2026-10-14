@@ -33,7 +33,14 @@ meson compile -C build
 meson install -C build
 ```
 
-On Arch Linux, build and install the package from a public tagged source release with `makepkg -si`. The root `PKGBUILD` builds and tests the source through Meson.
+Arch Linux package sources are maintained under `packaging/aur`. After a stable public release is available, build and install the package from its release tag with:
+
+```sh
+cd packaging/aur
+makepkg -si
+```
+
+Stable GitHub releases are published to the AUR by the repository's release workflow. AUR publication requires the upstream GitHub repository to be public so that package builds can fetch the tagged source.
 
 Meson can run Bors with configured arguments. The option accepts a comma-separated argument list:
 
@@ -106,7 +113,7 @@ cmd/bors/       CLI entry point
 internal/       CLI, input, terminal, and renderer packages
 tests/          Automated behavior and protocol tests
 meson.build     Build, install, test, and run targets
-PKGBUILD        Arch Linux source package
+packaging/aur/  Arch Linux package sources
 ```
 
 ## Development

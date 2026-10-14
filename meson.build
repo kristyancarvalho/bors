@@ -22,6 +22,9 @@ go_sources = files(
 linker_flags = '-X=main.version=' + meson.project_version()
 if get_option('buildtype') == 'release'
   linker_flags = '-s -w ' + linker_flags
+  if host_machine.system() == 'linux'
+    linker_flags = '-linkmode=external -extldflags=-Wl,-z,relro,-z,now ' + linker_flags
+  endif
 endif
 
 bors = custom_target(
