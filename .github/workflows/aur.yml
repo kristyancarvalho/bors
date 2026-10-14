@@ -1,0 +1,157 @@
+name: Publish AUR package
+
+on:
+  release:
+    types: [published]
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published stable version tag to synchronize
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-bors
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'kristyancarvalho/bors' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'release' && !github.event.release.prerelease))
+      ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Prepare Arch environment
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git \
+            openssh \
+            curl \
+            jq \
+            go \
+            meson \
+            ninja
+          useradd --create-home --uid 1000 aurbuilder
+
+      - name: Resolve stable release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event_name == 'release' && github.event.release.tag_name || '' }}
+        run: |
+          tag=$REQUESTED_TAG
+          if [[ -n $tag ]]; then
+            [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            endpoint="releases/tags/${tag}"
+          else
+            endpoint=releases/latest
+          fi
+          metadata=$(curl -fsSL --retry 3 --connect-timeout 15 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/${endpoint}")
+          resolved=$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' <<<"$metadata")
+          [[ $resolved =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ -n $tag ]]; then
+            test "$tag" = "$resolved"
+          fi
+          printf 'tag=%s\n' "$resolved" >>"$GITHUB_OUTPUT"
+          printf 'RELEASE_TAG=%s\n' "$resolved" >>"$GITHUB_ENV"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify upstream repository is public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility=$(curl -fsSL --retry 3 --connect-timeout 15 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}" | jq -er .visibility)
+          test "$visibility" = public
+
+      - name: Verify release commit is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_sha=$(git rev-parse "${RELEASE_TAG}^{commit}")
+          main_sha=$(curl -fsSL --retry 3 --connect-timeout 15 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/main" | jq -er .sha)
+          merge_base=$(curl -fsSL --retry 3 --connect-timeout 15 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/compare/${release_sha}...${main_sha}" | jq -er .merge_base_commit.sha)
+          test "$merge_base" = "$release_sha"
+
+      - name: Prepare package workspace
+        run: |
+          chown -R aurbuilder:aurbuilder "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE/packaging/aur"
+          runuser -u aurbuilder -- makepkg --printsrcinfo > "$RUNNER_TEMP/bors-srcinfo"
+          cmp .SRCINFO "$RUNNER_TEMP/bors-srcinfo"
+
+      - name: Build and test Arch package
+        run: |
+          cd "$GITHUB_WORKSPACE/packaging/aur"
+          runuser -u aurbuilder -- makepkg --cleanbuild --clean --noconfirm
+
+      - name: Configure AUR SSH
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_SSH_KNOWN_HOSTS: ${{ vars.AUR_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$AUR_SSH_PRIVATE_KEY"
+          test -n "$AUR_SSH_KNOWN_HOSTS"
+          install -d -m 0700 -o aurbuilder -g aurbuilder /home/aurbuilder/.ssh
+          install -m 0600 -o aurbuilder -g aurbuilder /dev/null /home/aurbuilder/.ssh/aur
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >/home/aurbuilder/.ssh/aur
+          printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" >/home/aurbuilder/.ssh/known_hosts
+          ssh-keygen -F aur.archlinux.org -f /home/aurbuilder/.ssh/known_hosts >/dev/null
+          chown aurbuilder:aurbuilder /home/aurbuilder/.ssh/known_hosts
+          chmod 0600 /home/aurbuilder/.ssh/known_hosts
+          cat >/home/aurbuilder/.ssh/config <<'EOF'
+          Host aur.archlinux.org
+            User aur
+            IdentityFile ~/.ssh/aur
+            IdentitiesOnly yes
+          EOF
+          chown aurbuilder:aurbuilder /home/aurbuilder/.ssh/config
+          chmod 0600 /home/aurbuilder/.ssh/config
+
+      - name: Publish package metadata
+        env:
+          AUR_PACKAGE_NAME: ${{ vars.AUR_PACKAGE_NAME }}
+          AUR_COMMIT_NAME: ${{ github.repository_owner }}
+          AUR_COMMIT_EMAIL: ${{ github.repository_owner }}@users.noreply.github.com
+        run: |
+          test "$AUR_PACKAGE_NAME" = bors
+          remote="ssh://aur@aur.archlinux.org/${AUR_PACKAGE_NAME}.git"
+          aur_directory=/home/aurbuilder/aur-package
+          runuser -u aurbuilder -- git -c init.defaultBranch=master clone "$remote" "$aur_directory"
+          runuser -u aurbuilder -- cp "$GITHUB_WORKSPACE/packaging/aur/PKGBUILD" "$aur_directory/"
+          runuser -u aurbuilder -- cp "$GITHUB_WORKSPACE/packaging/aur/.SRCINFO" "$aur_directory/"
+          runuser -u aurbuilder -- git -C "$aur_directory" config user.name "$AUR_COMMIT_NAME"
+          runuser -u aurbuilder -- git -C "$aur_directory" config user.email "$AUR_COMMIT_EMAIL"
+          runuser -u aurbuilder -- git -C "$aur_directory" add PKGBUILD .SRCINFO
+          if runuser -u aurbuilder -- git -C "$aur_directory" diff --cached --quiet; then
+            exit 0
+          fi
+          runuser -u aurbuilder -- git -C "$aur_directory" commit -m "Update bors to $RELEASE_TAG"
+          runuser -u aurbuilder -- git -C "$aur_directory" push origin master

@@ -45,6 +45,7 @@ func DetectKitty(transport QueryTransport, timeout time.Duration) (supported boo
 	}
 	deadline := time.Now().Add(timeout)
 	response := make([]byte, 0, 128)
+	kittyReply := false
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		value, available, readErr := transport.ReadAvailableByte(remaining)
@@ -67,14 +68,12 @@ func DetectKitty(transport QueryTransport, timeout time.Duration) (supported boo
 		if len(response) > 4096 {
 			return false, nil
 		}
-		if hasKittyReply(response) {
-			return true, nil
-		}
+		kittyReply = kittyReply || hasKittyReply(response)
 		if hasDA1Reply(response) {
-			return false, nil
+			return kittyReply, nil
 		}
 	}
-	return false, nil
+	return kittyReply, nil
 }
 
 func hasKittyReply(response []byte) bool {
