@@ -1,1 +1,4 @@
 specs/
+/bors
+dist/
+coverage.out
