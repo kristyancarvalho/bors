@@ -15,6 +15,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.x'
@@ -22,7 +24,7 @@ jobs:
       - name: Install Meson and Ninja
         run: sudo apt-get update && sudo apt-get install -y meson ninja-build
       - name: Check formatting
-        run: test -z "$(gofmt -l $(git ls-files '*.go'))"
+        run: test -z "$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
       - name: Configure Meson
         run: meson setup build
       - name: Build
