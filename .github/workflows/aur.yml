@@ -48,6 +48,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event_name == 'release' && github.event.release.tag_name || '' }}
+        shell: bash
         run: |
           tag=$REQUESTED_TAG
           if [[ -n $tag ]]; then
@@ -88,8 +89,9 @@ jobs:
       - name: Verify release commit is on main
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          release_sha=$(git rev-parse "${RELEASE_TAG}^{commit}")
+          release_sha=$(git -c safe.directory="$GITHUB_WORKSPACE" -C "$GITHUB_WORKSPACE" rev-parse "${RELEASE_TAG}^{commit}")
           main_sha=$(curl -fsSL --retry 3 --connect-timeout 15 \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H 'Accept: application/vnd.github+json' \
