@@ -1,4 +1,5 @@
 specs/
 /bors
+/build/
 dist/
 coverage.out

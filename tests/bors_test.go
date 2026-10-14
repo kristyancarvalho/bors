@@ -140,9 +140,57 @@ func TestInputFormatsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(decoded.Frames) != 2 || decoded.LoopCount != 0 || decoded.Frames[0].Delay != 10*time.Millisecond || decoded.Frames[1].Delay != 10*time.Millisecond {
+		t.Fatalf("GIF animation metadata = %d frames, loop %d, delays %#v", len(decoded.Frames), decoded.LoopCount, decoded.Frames)
+	}
 	red, _, blue, _ := decoded.Pixels.At(0, 0).RGBA()
 	if red <= blue {
 		t.Fatal("GIF first frame was not rendered")
+	}
+	red, _, blue, _ = decoded.Frames[1].Pixels.At(0, 0).RGBA()
+	if blue <= red {
+		t.Fatal("GIF second frame was not composited")
+	}
+}
+
+func TestGIFDisposalAndFrameOffsets(t *testing.T) {
+	palette := color.Palette{
+		color.RGBA{},
+		color.RGBA{R: 255, A: 255},
+		color.RGBA{B: 255, A: 255},
+		color.RGBA{G: 255, A: 255},
+	}
+	first := image.NewPaletted(image.Rect(0, 0, 2, 1), palette)
+	first.SetColorIndex(0, 0, 1)
+	first.SetColorIndex(1, 0, 1)
+	second := image.NewPaletted(image.Rect(0, 0, 1, 1), palette)
+	second.SetColorIndex(0, 0, 2)
+	third := image.NewPaletted(image.Rect(1, 0, 2, 1), palette)
+	third.SetColorIndex(1, 0, 3)
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{
+		Image:     []*image.Paletted{first, second, third},
+		Delay:     []int{1, 1, 1},
+		Disposal:  []byte{gif.DisposalBackground, gif.DisposalNone, gif.DisposalNone},
+		LoopCount: -1,
+		Config:    image.Config{ColorModel: palette, Width: 2, Height: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := input.Load(bytes.NewReader(encoded.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Frames) != 3 {
+		t.Fatalf("decoded %d GIF frames, want 3", len(decoded.Frames))
+	}
+	red, _, _, _ := decoded.Frames[0].Pixels.At(1, 0).RGBA()
+	backgroundRed, _, backgroundBlue, _ := decoded.Frames[1].Pixels.At(1, 0).RGBA()
+	_, _, secondBlue, _ := decoded.Frames[1].Pixels.At(0, 0).RGBA()
+	_, _, blueAtLeft, _ := decoded.Frames[2].Pixels.At(0, 0).RGBA()
+	_, greenAtRight, _, _ := decoded.Frames[2].Pixels.At(1, 0).RGBA()
+	if red == 0 || backgroundRed != 0 || backgroundBlue != 0 || blueAtLeft == 0 || greenAtRight == 0 {
+		t.Fatalf("GIF disposal or offset composition is incorrect: frame colors %x, %x/%x, %x, %x/%x", red, backgroundRed, backgroundBlue, secondBlue, blueAtLeft, greenAtRight)
 	}
 }
 
@@ -297,6 +345,136 @@ func TestKittyChunkBoundaries(t *testing.T) {
 				t.Fatalf("payload did not survive chunk boundary: %v", err)
 			}
 		})
+	}
+}
+
+func TestKittyAnimationProtocolFinite(t *testing.T) {
+	frames := []image.Image{
+		image.NewNRGBA(image.Rect(0, 0, 2, 2)),
+		image.NewNRGBA(image.Rect(0, 0, 2, 2)),
+	}
+	frames[0].(*image.NRGBA).SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+	frames[1].(*image.NRGBA).SetNRGBA(0, 0, color.NRGBA{B: 255, A: 255})
+	delays := []time.Duration{20 * time.Millisecond, 30 * time.Millisecond}
+	var output bytes.Buffer
+	var waited []time.Duration
+	wait := func(delay time.Duration) { waited = append(waited, delay) }
+	options := kitty.AnimationOptions{Columns: 8, Rows: 4, ImageNumber: 77, LoopCount: -1, Wait: wait}
+	if err := kitty.RenderAnimation(&output, frames, delays, options); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	requireKittyControls(t, text, []string{
+		"a=t,f=100,I=77,q=2",
+		"a=f,f=100,I=77,z=30,q=2",
+		"a=a,I=77,r=1,z=20,q=2",
+		"a=p,I=77,c=8,r=4,q=2",
+		"a=a,I=77,c=2,q=2",
+	})
+	if strings.Contains(text, "s=3,v=1") || strings.Count(text, "a=f,f=100") != 1 || len(waited) != 2 || waited[0] != delays[0] || waited[1] != delays[1] {
+		t.Fatalf("finite Kitty animation control or timing is wrong: %q, waits %#v", text, waited)
+	}
+	if err := kitty.RenderAnimation(io.Discard, frames[:1], delays[:1], options); err == nil {
+		t.Fatal("single-frame Kitty animation succeeded")
+	}
+}
+
+func TestKittyAnimationProtocolInfinite(t *testing.T) {
+	frames := kittyAnimationFrames()
+	delays := []time.Duration{20 * time.Millisecond, 30 * time.Millisecond}
+	var output bytes.Buffer
+	var waited []time.Duration
+	wait := func(delay time.Duration) { waited = append(waited, delay) }
+	options := kitty.AnimationOptions{Columns: 8, Rows: 4, ImageNumber: 78, LoopCount: 0, Wait: wait}
+	if err := kitty.RenderAnimation(&output, frames, delays, options); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "a=a,I=78,s=3,v=1,q=2") || len(waited) != 0 {
+		t.Fatalf("infinite Kitty animation was not delegated to the terminal: %q", output.String())
+	}
+	if err := kitty.RenderAnimation(io.Discard, frames, delays, kitty.AnimationOptions{Columns: 8, Rows: 4, ImageNumber: 79, LoopCount: 0}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func kittyAnimationFrames() []image.Image {
+	frames := []image.Image{
+		image.NewNRGBA(image.Rect(0, 0, 2, 2)),
+		image.NewNRGBA(image.Rect(0, 0, 2, 2)),
+	}
+	frames[0].(*image.NRGBA).SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+	frames[1].(*image.NRGBA).SetNRGBA(0, 0, color.NRGBA{B: 255, A: 255})
+	return frames
+}
+
+func requireKittyControls(t *testing.T, output string, expectedControls []string) {
+	t.Helper()
+	for _, expected := range expectedControls {
+		if !strings.Contains(output, expected) {
+			t.Errorf("Kitty animation output omitted %q", expected)
+		}
+	}
+}
+
+func TestKittyAnimationChunkContinuationMetadata(t *testing.T) {
+	frames := largeKittyAnimationFrames()
+	var output bytes.Buffer
+	options := kitty.AnimationOptions{Columns: 20, Rows: 10, ImageNumber: 91, LoopCount: 0}
+	if err := kitty.RenderAnimation(&output, frames, []time.Duration{40 * time.Millisecond, 60 * time.Millisecond}, options); err != nil {
+		t.Fatal(err)
+	}
+	chunks := parseKittyChunks(t, output.Bytes())
+	assertKittyChunkSizes(t, chunks)
+	assertAnimationChunkMetadata(t, chunks)
+}
+
+func largeKittyAnimationFrames() []image.Image {
+	frames := make([]image.Image, 2)
+	state := uint32(1)
+	for frameIndex := range frames {
+		frame := image.NewNRGBA(image.Rect(0, 0, 128, 128))
+		for index := 0; index < len(frame.Pix); index += 4 {
+			state ^= state << 13
+			state ^= state >> 17
+			state ^= state << 5
+			frame.Pix[index] = byte(state)
+			frame.Pix[index+1] = byte(state >> 8)
+			frame.Pix[index+2] = byte(state >> 16)
+			frame.Pix[index+3] = 255
+		}
+		frames[frameIndex] = frame
+	}
+	return frames
+}
+
+func assertKittyChunkSizes(t *testing.T, chunks []kittyChunk) {
+	for index, chunk := range chunks {
+		if len(chunk.data) > 4096 || (index < len(chunks)-1 && len(chunk.data) > 0 && len(chunk.data)%4 != 0) {
+			t.Fatalf("Kitty animation chunk %d has invalid data length %d", index, len(chunk.data))
+		}
+	}
+}
+
+func assertAnimationChunkMetadata(t *testing.T, chunks []kittyChunk) {
+	frameChunkCount := 0
+	for index, chunk := range chunks {
+		if !strings.Contains(chunk.control, "a=f") {
+			continue
+		}
+		frameChunkCount++
+		assertAnimationChunkControl(t, index, chunk)
+	}
+	if frameChunkCount < 2 {
+		t.Fatalf("large animation frame did not exercise chunk continuation: %d chunks", frameChunkCount)
+	}
+}
+
+func assertAnimationChunkControl(t *testing.T, index int, chunk kittyChunk) {
+	if strings.Contains(chunk.control, "f=100") && !strings.Contains(chunk.control, "I=91") {
+		t.Errorf("animation chunk omitted its image number: %q", chunk.control)
+	}
+	if index > 0 && !strings.Contains(chunk.control, "m=0") && !strings.Contains(chunk.control, "m=1") {
+		t.Errorf("animation continuation omitted its chunk marker: %q", chunk.control)
 	}
 }
 
@@ -468,6 +646,58 @@ func TestCLIFlagsAndStreams(t *testing.T) {
 	}
 }
 
+func TestCLIAnimatedGIFFallback(t *testing.T) {
+	palette := color.Palette{color.RGBA{R: 255, A: 255}, color.RGBA{B: 255, A: 255}}
+	frames := []*image.Paletted{
+		image.NewPaletted(image.Rect(0, 0, 2, 2), palette),
+		image.NewPaletted(image.Rect(0, 0, 2, 2), palette),
+	}
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 2; x++ {
+			frames[0].SetColorIndex(x, y, 0)
+			frames[1].SetColorIndex(x, y, 1)
+		}
+	}
+	var encoded bytes.Buffer
+	if err := gif.EncodeAll(&encoded, &gif.GIF{
+		Image:     frames,
+		Delay:     []int{2, 3},
+		LoopCount: -1,
+		Config:    image.Config{ColorModel: palette, Width: 2, Height: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "animated.gif")
+	if err := os.WriteFile(path, encoded.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime, output, stderr := testRuntime(nil)
+	var waited []time.Duration
+	runtime.Wait = func(delay time.Duration) { waited = append(waited, delay) }
+	runtime.GetSize = func() (terminal.Size, error) {
+		return terminal.Size{Columns: 80, Rows: 24, CellRatio: 1}, nil
+	}
+	if code := cli.Run([]string{"--fallback", "--size", "2x2", "--color", "truecolor", path}, runtime, "test"); code != 0 {
+		t.Fatalf("animated GIF CLI result = %d, stderr %q", code, stderr.String())
+	}
+	text := output.String()
+	if !strings.Contains(text, "\x1b[38;2;255;0;0m") || !strings.Contains(text, "\x1b[38;2;0;0;255m") || strings.Count(text, "▀") != 8 || !strings.Contains(text, "\x1b[2A") {
+		t.Fatalf("ANSI animation did not redraw both frames in place; output bytes %d", len(text))
+	}
+	if len(waited) != 2 || waited[0] != 20*time.Millisecond || waited[1] != 30*time.Millisecond {
+		t.Fatalf("ANSI animation delays = %#v", waited)
+	}
+	runtime, output, stderr = testRuntime(nil)
+	waited = nil
+	runtime.Wait = func(delay time.Duration) { waited = append(waited, delay) }
+	if code := cli.Run([]string{"--kitty", path}, runtime, "test"); code != 0 {
+		t.Fatalf("Kitty animated GIF CLI result = %d, stderr %q", code, stderr.String())
+	}
+	if !strings.Contains(output.String(), "a=t,f=100,I=") || !strings.Contains(output.String(), "a=f,f=100,I=") || len(waited) != 2 {
+		t.Fatalf("Kitty GIF animation was not transmitted: waits %#v, output %q", waited, output.String())
+	}
+}
+
 func TestCLIAutomaticAndForcedKittySelection(t *testing.T) {
 	imageData := encodeImage(t, "png", color.NRGBA{B: 200, A: 255})
 	path := filepath.Join(t.TempDir(), "photo.png")
@@ -543,7 +773,9 @@ func parseKittyChunks(t *testing.T, output []byte) []kittyChunk {
 		command := output[len("\x1b_G"):end]
 		separator := bytes.IndexByte(command, ';')
 		if separator < 0 {
-			t.Fatal("Kitty command has no payload separator")
+			chunks = append(chunks, kittyChunk{control: string(command)})
+			output = output[end+len("\x1b\\"):]
+			continue
 		}
 		chunks = append(chunks, kittyChunk{control: string(command[:separator]), data: append([]byte(nil), command[separator+1:]...)})
 		output = output[end+len("\x1b\\"):]

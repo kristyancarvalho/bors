@@ -2,12 +2,16 @@ package cli
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
 	"image/png"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kristyancarvalho/bors/internal/input"
 	"github.com/kristyancarvalho/bors/internal/render/ansi"
@@ -25,6 +29,7 @@ type Runtime struct {
 	GetSize   func() (terminal.Size, error)
 	Probe     func() (bool, error)
 	Env       []string
+	Wait      func(time.Duration)
 }
 
 func Run(arguments []string, runtime Runtime, version string) int {
@@ -92,6 +97,23 @@ func Run(arguments []string, runtime Runtime, version string) int {
 		return report(runtime.Stderr, err)
 	}
 	if useKitty {
+		if len(imageData.Frames) > 1 {
+			imageNumber, err := kittyImageNumber()
+			if err != nil {
+				return report(runtime.Stderr, fmt.Errorf("create Kitty animation id: %w", err))
+			}
+			frames := make([]image.Image, len(imageData.Frames))
+			delays := make([]time.Duration, len(imageData.Frames))
+			for index, frame := range imageData.Frames {
+				frames[index] = frame.Pixels
+				delays[index] = frame.Delay
+			}
+			animation := kitty.AnimationOptions{Columns: columns, Rows: rows, ImageNumber: imageNumber, LoopCount: imageData.LoopCount, Wait: runtime.Wait}
+			if err := kitty.RenderAnimation(runtime.Stdout, frames, delays, animation); err != nil {
+				return report(runtime.Stderr, err)
+			}
+			return 0
+		}
 		if imageData.Format == "png" && imageFile != nil {
 			if err := kitty.RenderReader(runtime.Stdout, imageFile, columns, rows); err != nil {
 				return report(runtime.Stderr, err)
@@ -119,10 +141,98 @@ func Run(arguments []string, runtime Runtime, version string) int {
 	if err != nil {
 		return report(runtime.Stderr, err)
 	}
+	if len(imageData.Frames) > 1 {
+		config := animationConfig{columns: columns, rows: rows, resolution: resolution, mode: colorMode, unicodeOutput: unicodeOutput, loopCount: imageData.LoopCount, wait: runtime.Wait}
+		if err := renderANSIAnimation(runtime.Stdout, imageData.Frames, config); err != nil {
+			return report(runtime.Stderr, err)
+		}
+		return 0
+	}
 	if err := ansi.Render(runtime.Stdout, imageData.Pixels, columns, rows, resolution, colorMode, unicodeOutput); err != nil {
 		return report(runtime.Stderr, err)
 	}
 	return 0
+}
+
+func renderANSIAnimation(writer io.Writer, frames []input.Frame, config animationConfig) error {
+	if len(frames) < 2 {
+		return errors.New("ANSI animation metadata is invalid")
+	}
+	cycles, err := animationCycles(config.loopCount)
+	if err != nil {
+		return err
+	}
+	if config.wait == nil {
+		config.wait = time.Sleep
+	}
+	state := animationState{}
+	for cycle := 0; cycles < 0 || cycle < cycles; cycle++ {
+		for _, frame := range frames {
+			if err := renderANSIFrame(writer, frame, config, &state); err != nil {
+				return err
+			}
+		}
+	}
+	config.wait(state.previousDelay)
+	return nil
+}
+
+type animationConfig struct {
+	columns       int
+	rows          int
+	resolution    int
+	mode          ansi.ColorMode
+	unicodeOutput bool
+	loopCount     int
+	wait          func(time.Duration)
+}
+
+type animationState struct {
+	drawn         bool
+	previousDelay time.Duration
+}
+
+func animationCycles(loopCount int) (int, error) {
+	if loopCount < -1 {
+		return 0, errors.New("ANSI animation metadata is invalid")
+	}
+	if loopCount == 0 {
+		return -1, nil
+	}
+	if loopCount == -1 {
+		return 1, nil
+	}
+	return loopCount + 1, nil
+}
+
+func renderANSIFrame(writer io.Writer, frame input.Frame, config animationConfig, state *animationState) error {
+	if frame.Pixels == nil || frame.Delay <= 0 {
+		return errors.New("ANSI animation frame is invalid")
+	}
+	if state.drawn {
+		config.wait(state.previousDelay)
+		if _, err := fmt.Fprintf(writer, "\x1b[%dA", config.rows); err != nil {
+			return err
+		}
+	}
+	if err := ansi.Render(writer, frame.Pixels, config.columns, config.rows, config.resolution, config.mode, config.unicodeOutput); err != nil {
+		return err
+	}
+	state.drawn = true
+	state.previousDelay = frame.Delay
+	return nil
+}
+
+func kittyImageNumber() (uint32, error) {
+	var data [4]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		return 0, err
+	}
+	imageNumber := binary.LittleEndian.Uint32(data[:])
+	if imageNumber == 0 {
+		imageNumber = 1
+	}
+	return imageNumber, nil
 }
 
 func selectKitty(parsed options, runtime Runtime) (bool, error) {
