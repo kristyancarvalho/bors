@@ -1,6 +1,12 @@
-# Bors
+<h1 align="center">Bors</h1>
 
-Bors displays PNG, JPEG, and GIF images directly in a terminal. It uses the Kitty Graphics Protocol when automatic capability detection confirms support and otherwise draws ANSI-colored Unicode blocks.
+<p align="center">Display images in your terminal with Kitty Graphics Protocol and ANSI fallback.</p>
+
+<p align="center">
+  <img alt="Open Source" src="https://img.shields.io/badge/open%20source-yes-brightgreen">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://github.com/kristyancarvalho/bors/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/kristyancarvalho/bors"></a>
+</p>
 
 ## Contents
 
@@ -38,6 +44,16 @@ Arch Linux package sources are maintained under `packaging/aur`. After a stable 
 ```sh
 cd packaging/aur
 makepkg -si
+```
+
+Alternatively, install the published AUR package with an AUR helper:
+
+```sh
+paru -S bors
+```
+
+```sh
+yay -S bors
 ```
 
 Stable GitHub releases are published to the AUR by the repository's release workflow. AUR publication requires the upstream GitHub repository to be public so that package builds can fetch the tagged source.
