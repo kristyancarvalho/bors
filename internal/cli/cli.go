@@ -108,7 +108,8 @@ func Run(arguments []string, runtime Runtime, version string) int {
 				frames[index] = frame.Pixels
 				delays[index] = frame.Delay
 			}
-			if err := kitty.RenderAnimation(runtime.Stdout, frames, delays, columns, rows, imageNumber, imageData.LoopCount, runtime.Wait); err != nil {
+			animation := kitty.AnimationOptions{Columns: columns, Rows: rows, ImageNumber: imageNumber, LoopCount: imageData.LoopCount, Wait: runtime.Wait}
+			if err := kitty.RenderAnimation(runtime.Stdout, frames, delays, animation); err != nil {
 				return report(runtime.Stderr, err)
 			}
 			return 0
@@ -141,7 +142,8 @@ func Run(arguments []string, runtime Runtime, version string) int {
 		return report(runtime.Stderr, err)
 	}
 	if len(imageData.Frames) > 1 {
-		if err := renderANSIAnimation(runtime.Stdout, imageData.Frames, columns, rows, resolution, colorMode, unicodeOutput, imageData.LoopCount, runtime.Wait); err != nil {
+		config := animationConfig{columns: columns, rows: rows, resolution: resolution, mode: colorMode, unicodeOutput: unicodeOutput, loopCount: imageData.LoopCount, wait: runtime.Wait}
+		if err := renderANSIAnimation(runtime.Stdout, imageData.Frames, config); err != nil {
 			return report(runtime.Stderr, err)
 		}
 		return 0
@@ -152,40 +154,72 @@ func Run(arguments []string, runtime Runtime, version string) int {
 	return 0
 }
 
-func renderANSIAnimation(writer io.Writer, frames []input.Frame, columns, rows, resolution int, mode ansi.ColorMode, unicodeOutput bool, loopCount int, wait func(time.Duration)) error {
-	if len(frames) < 2 || loopCount < -1 {
+func renderANSIAnimation(writer io.Writer, frames []input.Frame, config animationConfig) error {
+	if len(frames) < 2 {
 		return errors.New("ANSI animation metadata is invalid")
 	}
-	if wait == nil {
-		wait = time.Sleep
+	cycles, err := animationCycles(config.loopCount)
+	if err != nil {
+		return err
 	}
-	cycles := 1
-	if loopCount == 0 {
-		cycles = -1
-	} else if loopCount > 0 {
-		cycles += loopCount
+	if config.wait == nil {
+		config.wait = time.Sleep
 	}
-	drawn := false
-	previousDelay := time.Duration(0)
+	state := animationState{}
 	for cycle := 0; cycles < 0 || cycle < cycles; cycle++ {
 		for _, frame := range frames {
-			if frame.Pixels == nil || frame.Delay <= 0 {
-				return errors.New("ANSI animation frame is invalid")
-			}
-			if drawn {
-				wait(previousDelay)
-				if _, err := fmt.Fprintf(writer, "\x1b[%dA", rows); err != nil {
-					return err
-				}
-			}
-			if err := ansi.Render(writer, frame.Pixels, columns, rows, resolution, mode, unicodeOutput); err != nil {
+			if err := renderANSIFrame(writer, frame, config, &state); err != nil {
 				return err
 			}
-			drawn = true
-			previousDelay = frame.Delay
 		}
 	}
-	wait(previousDelay)
+	config.wait(state.previousDelay)
+	return nil
+}
+
+type animationConfig struct {
+	columns       int
+	rows          int
+	resolution    int
+	mode          ansi.ColorMode
+	unicodeOutput bool
+	loopCount     int
+	wait          func(time.Duration)
+}
+
+type animationState struct {
+	drawn         bool
+	previousDelay time.Duration
+}
+
+func animationCycles(loopCount int) (int, error) {
+	if loopCount < -1 {
+		return 0, errors.New("ANSI animation metadata is invalid")
+	}
+	if loopCount == 0 {
+		return -1, nil
+	}
+	if loopCount == -1 {
+		return 1, nil
+	}
+	return loopCount + 1, nil
+}
+
+func renderANSIFrame(writer io.Writer, frame input.Frame, config animationConfig, state *animationState) error {
+	if frame.Pixels == nil || frame.Delay <= 0 {
+		return errors.New("ANSI animation frame is invalid")
+	}
+	if state.drawn {
+		config.wait(state.previousDelay)
+		if _, err := fmt.Fprintf(writer, "\x1b[%dA", config.rows); err != nil {
+			return err
+		}
+	}
+	if err := ansi.Render(writer, frame.Pixels, config.columns, config.rows, config.resolution, config.mode, config.unicodeOutput); err != nil {
+		return err
+	}
+	state.drawn = true
+	state.previousDelay = frame.Delay
 	return nil
 }
 

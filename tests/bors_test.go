@@ -348,7 +348,7 @@ func TestKittyChunkBoundaries(t *testing.T) {
 	}
 }
 
-func TestKittyAnimationProtocol(t *testing.T) {
+func TestKittyAnimationProtocolFinite(t *testing.T) {
 	frames := []image.Image{
 		image.NewNRGBA(image.Rect(0, 0, 2, 2)),
 		image.NewNRGBA(image.Rect(0, 0, 2, 2)),
@@ -359,38 +359,76 @@ func TestKittyAnimationProtocol(t *testing.T) {
 	var output bytes.Buffer
 	var waited []time.Duration
 	wait := func(delay time.Duration) { waited = append(waited, delay) }
-	if err := kitty.RenderAnimation(&output, frames, delays, 8, 4, 77, -1, wait); err != nil {
+	options := kitty.AnimationOptions{Columns: 8, Rows: 4, ImageNumber: 77, LoopCount: -1, Wait: wait}
+	if err := kitty.RenderAnimation(&output, frames, delays, options); err != nil {
 		t.Fatal(err)
 	}
 	text := output.String()
-	for _, expected := range []string{
+	requireKittyControls(t, text, []string{
 		"a=t,f=100,I=77,q=2",
 		"a=f,f=100,I=77,z=30,q=2",
 		"a=a,I=77,r=1,z=20,q=2",
 		"a=p,I=77,c=8,r=4,q=2",
 		"a=a,I=77,c=2,q=2",
-	} {
-		if !strings.Contains(text, expected) {
-			t.Errorf("Kitty animation output omitted %q", expected)
-		}
-	}
+	})
 	if strings.Contains(text, "s=3,v=1") || strings.Count(text, "a=f,f=100") != 1 || len(waited) != 2 || waited[0] != delays[0] || waited[1] != delays[1] {
 		t.Fatalf("finite Kitty animation control or timing is wrong: %q, waits %#v", text, waited)
 	}
-	output.Reset()
-	waited = nil
-	if err := kitty.RenderAnimation(&output, frames, delays, 8, 4, 78, 0, wait); err != nil {
+	if err := kitty.RenderAnimation(io.Discard, frames[:1], delays[:1], options); err == nil {
+		t.Fatal("single-frame Kitty animation succeeded")
+	}
+}
+
+func TestKittyAnimationProtocolInfinite(t *testing.T) {
+	frames := kittyAnimationFrames()
+	delays := []time.Duration{20 * time.Millisecond, 30 * time.Millisecond}
+	var output bytes.Buffer
+	var waited []time.Duration
+	wait := func(delay time.Duration) { waited = append(waited, delay) }
+	options := kitty.AnimationOptions{Columns: 8, Rows: 4, ImageNumber: 78, LoopCount: 0, Wait: wait}
+	if err := kitty.RenderAnimation(&output, frames, delays, options); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), "a=a,I=78,s=3,v=1,q=2") || len(waited) != 0 {
 		t.Fatalf("infinite Kitty animation was not delegated to the terminal: %q", output.String())
 	}
-	if err := kitty.RenderAnimation(io.Discard, frames[:1], delays[:1], 8, 4, 1, -1, nil); err == nil {
-		t.Fatal("single-frame Kitty animation succeeded")
+	if err := kitty.RenderAnimation(io.Discard, frames, delays, kitty.AnimationOptions{Columns: 8, Rows: 4, ImageNumber: 79, LoopCount: 0}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func kittyAnimationFrames() []image.Image {
+	frames := []image.Image{
+		image.NewNRGBA(image.Rect(0, 0, 2, 2)),
+		image.NewNRGBA(image.Rect(0, 0, 2, 2)),
+	}
+	frames[0].(*image.NRGBA).SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+	frames[1].(*image.NRGBA).SetNRGBA(0, 0, color.NRGBA{B: 255, A: 255})
+	return frames
+}
+
+func requireKittyControls(t *testing.T, output string, expectedControls []string) {
+	t.Helper()
+	for _, expected := range expectedControls {
+		if !strings.Contains(output, expected) {
+			t.Errorf("Kitty animation output omitted %q", expected)
+		}
 	}
 }
 
 func TestKittyAnimationChunkContinuationMetadata(t *testing.T) {
+	frames := largeKittyAnimationFrames()
+	var output bytes.Buffer
+	options := kitty.AnimationOptions{Columns: 20, Rows: 10, ImageNumber: 91, LoopCount: 0}
+	if err := kitty.RenderAnimation(&output, frames, []time.Duration{40 * time.Millisecond, 60 * time.Millisecond}, options); err != nil {
+		t.Fatal(err)
+	}
+	chunks := parseKittyChunks(t, output.Bytes())
+	assertKittyChunkSizes(t, chunks)
+	assertAnimationChunkMetadata(t, chunks)
+}
+
+func largeKittyAnimationFrames() []image.Image {
 	frames := make([]image.Image, 2)
 	state := uint32(1)
 	for frameIndex := range frames {
@@ -406,28 +444,37 @@ func TestKittyAnimationChunkContinuationMetadata(t *testing.T) {
 		}
 		frames[frameIndex] = frame
 	}
-	var output bytes.Buffer
-	if err := kitty.RenderAnimation(&output, frames, []time.Duration{40 * time.Millisecond, 60 * time.Millisecond}, 20, 10, 91, 0, nil); err != nil {
-		t.Fatal(err)
-	}
-	chunks := parseKittyChunks(t, output.Bytes())
-	frameChunkCount := 0
+	return frames
+}
+
+func assertKittyChunkSizes(t *testing.T, chunks []kittyChunk) {
 	for index, chunk := range chunks {
 		if len(chunk.data) > 4096 || (index < len(chunks)-1 && len(chunk.data) > 0 && len(chunk.data)%4 != 0) {
 			t.Fatalf("Kitty animation chunk %d has invalid data length %d", index, len(chunk.data))
 		}
-		if strings.Contains(chunk.control, "a=f") {
-			frameChunkCount++
-			if strings.Contains(chunk.control, "f=100") && !strings.Contains(chunk.control, "I=91") {
-				t.Errorf("animation chunk omitted its image number: %q", chunk.control)
-			}
-			if index > 0 && !strings.Contains(chunk.control, "m=0") && !strings.Contains(chunk.control, "m=1") {
-				t.Errorf("animation continuation omitted its chunk marker: %q", chunk.control)
-			}
+	}
+}
+
+func assertAnimationChunkMetadata(t *testing.T, chunks []kittyChunk) {
+	frameChunkCount := 0
+	for index, chunk := range chunks {
+		if !strings.Contains(chunk.control, "a=f") {
+			continue
 		}
+		frameChunkCount++
+		assertAnimationChunkControl(t, index, chunk)
 	}
 	if frameChunkCount < 2 {
 		t.Fatalf("large animation frame did not exercise chunk continuation: %d chunks", frameChunkCount)
+	}
+}
+
+func assertAnimationChunkControl(t *testing.T, index int, chunk kittyChunk) {
+	if strings.Contains(chunk.control, "f=100") && !strings.Contains(chunk.control, "I=91") {
+		t.Errorf("animation chunk omitted its image number: %q", chunk.control)
+	}
+	if index > 0 && !strings.Contains(chunk.control, "m=0") && !strings.Contains(chunk.control, "m=1") {
+		t.Errorf("animation continuation omitted its chunk marker: %q", chunk.control)
 	}
 }
 

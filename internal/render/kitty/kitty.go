@@ -27,74 +27,122 @@ func RenderReader(writer io.Writer, pngReader io.Reader, columns, rows int) erro
 	return transmit(writer, pngReader, fmt.Sprintf("a=T,f=100,c=%d,r=%d,q=2", columns, rows), "")
 }
 
-func RenderAnimation(writer io.Writer, frames []image.Image, delays []time.Duration, columns, rows int, imageNumber uint32, loopCount int, wait func(time.Duration)) error {
+type AnimationOptions struct {
+	Columns     int
+	Rows        int
+	ImageNumber uint32
+	LoopCount   int
+	Wait        func(time.Duration)
+}
+
+func RenderAnimation(writer io.Writer, frames []image.Image, delays []time.Duration, options AnimationOptions) error {
+	normalizedDelays, err := validateAnimation(frames, delays, options)
+	if err != nil {
+		return err
+	}
+	if err := transmitAnimationFrames(writer, frames, normalizedDelays, options.ImageNumber); err != nil {
+		return err
+	}
+	if err := setAnimationTiming(writer, options.ImageNumber, normalizedDelays[0]); err != nil {
+		return err
+	}
+	if err := placeAnimation(writer, options); err != nil {
+		return err
+	}
+	return playAnimation(writer, normalizedDelays, options)
+}
+
+func validateAnimation(frames []image.Image, delays []time.Duration, options AnimationOptions) ([]time.Duration, error) {
 	if len(frames) < 2 || len(frames) != len(delays) {
-		return errors.New("Kitty animation needs matching frame and delay lists")
+		return nil, errors.New("Kitty animation needs matching frame and delay lists")
 	}
-	if columns <= 0 || rows <= 0 || imageNumber == 0 {
-		return errors.New("Kitty animation dimensions and image number must be positive")
+	if options.Columns <= 0 || options.Rows <= 0 || options.ImageNumber == 0 {
+		return nil, errors.New("Kitty animation dimensions and image number must be positive")
 	}
-	if loopCount < -1 {
-		return errors.New("Kitty animation loop count is invalid")
+	if options.LoopCount < -1 {
+		return nil, errors.New("Kitty animation loop count is invalid")
 	}
 	normalizedDelays := append([]time.Duration(nil), delays...)
 	for index, frame := range frames {
 		if frame == nil || frame.Bounds().Empty() {
-			return fmt.Errorf("Kitty animation frame %d is empty", index+1)
+			return nil, fmt.Errorf("Kitty animation frame %d is empty", index+1)
 		}
 		if normalizedDelays[index] <= 0 {
 			normalizedDelays[index] = 100 * time.Millisecond
 		}
 	}
+	return normalizedDelays, nil
+}
+
+func transmitAnimationFrames(writer io.Writer, frames []image.Image, delays []time.Duration, imageNumber uint32) error {
 	for index, frame := range frames {
-		buffer := &limitedBuffer{limit: 64 << 20}
-		if err := png.Encode(buffer, frame); err != nil {
-			return fmt.Errorf("encode Kitty animation frame %d: %w", index+1, err)
-		}
-		control := fmt.Sprintf("a=t,f=100,I=%d,q=2", imageNumber)
-		continuation := ""
-		if index > 0 {
-			control = fmt.Sprintf("a=f,f=100,I=%d,z=%d,q=2", imageNumber, delayMilliseconds(normalizedDelays[index]))
-			continuation = "a=f,q=2"
-		}
-		if err := transmit(writer, bytes.NewReader(buffer.Bytes()), control, continuation); err != nil {
+		if err := transmitAnimationFrame(writer, frame, delays[index], imageNumber, index); err != nil {
 			return err
 		}
 	}
-	rootDelay := fmt.Sprintf("\x1b_Ga=a,I=%d,r=1,z=%d,q=2\x1b\\", imageNumber, delayMilliseconds(normalizedDelays[0]))
-	if err := writeAll(writer, []byte(rootDelay)); err != nil {
-		return err
+	return nil
+}
+
+func transmitAnimationFrame(writer io.Writer, frame image.Image, delay time.Duration, imageNumber uint32, index int) error {
+	buffer := &limitedBuffer{limit: 64 << 20}
+	if err := png.Encode(buffer, frame); err != nil {
+		return fmt.Errorf("encode Kitty animation frame %d: %w", index+1, err)
 	}
-	placement := fmt.Sprintf("\x1b_Ga=p,I=%d,c=%d,r=%d,q=2\x1b\\", imageNumber, columns, rows)
-	if err := writeAll(writer, []byte(placement)); err != nil {
-		return err
+	control := fmt.Sprintf("a=t,f=100,I=%d,q=2", imageNumber)
+	continuation := ""
+	if index > 0 {
+		control = fmt.Sprintf("a=f,f=100,I=%d,z=%d,q=2", imageNumber, delayMilliseconds(delay))
+		continuation = "a=f,q=2"
 	}
-	if loopCount == 0 {
-		start := fmt.Sprintf("\x1b_Ga=a,I=%d,s=3,v=1,q=2\x1b\\", imageNumber)
-		return writeAll(writer, []byte(start))
+	return transmit(writer, bytes.NewReader(buffer.Bytes()), control, continuation)
+}
+
+func setAnimationTiming(writer io.Writer, imageNumber uint32, delay time.Duration) error {
+	rootDelay := fmt.Sprintf("\x1b_Ga=a,I=%d,r=1,z=%d,q=2\x1b\\", imageNumber, delayMilliseconds(delay))
+	return writeAll(writer, []byte(rootDelay))
+}
+
+func placeAnimation(writer io.Writer, options AnimationOptions) error {
+	placement := fmt.Sprintf("\x1b_Ga=p,I=%d,c=%d,r=%d,q=2\x1b\\", options.ImageNumber, options.Columns, options.Rows)
+	return writeAll(writer, []byte(placement))
+}
+
+func playAnimation(writer io.Writer, delays []time.Duration, options AnimationOptions) error {
+	if options.LoopCount == 0 {
+		return startTerminalAnimation(writer, options.ImageNumber)
 	}
-	cycles := 1
-	if loopCount > 0 {
-		cycles += loopCount
-	}
+	return playClientAnimation(writer, delays, options)
+}
+
+func startTerminalAnimation(writer io.Writer, imageNumber uint32) error {
+	start := fmt.Sprintf("\x1b_Ga=a,I=%d,s=3,v=1,q=2\x1b\\", imageNumber)
+	return writeAll(writer, []byte(start))
+}
+
+func playClientAnimation(writer io.Writer, delays []time.Duration, options AnimationOptions) error {
+	wait := options.Wait
 	if wait == nil {
 		wait = time.Sleep
 	}
+	cycles := 1
+	if options.LoopCount > 0 {
+		cycles += options.LoopCount
+	}
 	for cycle := 0; cycle < cycles; cycle++ {
-		for index := 1; index < len(frames); index++ {
-			wait(normalizedDelays[index-1])
-			if err := selectAnimationFrame(writer, imageNumber, index+1); err != nil {
+		for index := 1; index < len(delays); index++ {
+			wait(delays[index-1])
+			if err := selectAnimationFrame(writer, options.ImageNumber, index+1); err != nil {
 				return err
 			}
 		}
 		if cycle+1 < cycles {
-			wait(normalizedDelays[len(normalizedDelays)-1])
-			if err := selectAnimationFrame(writer, imageNumber, 1); err != nil {
+			wait(delays[len(delays)-1])
+			if err := selectAnimationFrame(writer, options.ImageNumber, 1); err != nil {
 				return err
 			}
 		}
 	}
-	wait(normalizedDelays[len(normalizedDelays)-1])
+	wait(delays[len(delays)-1])
 	return nil
 }
 
