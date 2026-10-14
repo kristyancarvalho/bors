@@ -491,11 +491,11 @@ func TestKittyRejectsInvalidArgumentsAndWriterErrors(t *testing.T) {
 }
 
 func TestKittyCapabilityQueryAndRestoration(t *testing.T) {
-	reply := []byte("\x1b_Gi=31;EINVAL:dummy\x1b\\\x1b[?1;2c")
+	reply := []byte("\x1b_Gi=31;EINVAL:dummy\x1b\\\x1b[?62;52;cnext")
 	transport := &fakeTransport{response: reply}
 	supported, err := terminal.DetectKitty(transport, time.Second)
-	if err != nil || !supported || transport.restored != 1 {
-		t.Fatalf("DetectKitty = %t, %v, restored %d times", supported, err, transport.restored)
+	if err != nil || !supported || transport.restored != 1 || string(transport.response) != "next" {
+		t.Fatalf("DetectKitty = %t, %v, remaining %q, restored %d times", supported, err, transport.response, transport.restored)
 	}
 	if !bytes.Contains(transport.written, []byte("a=q,t=d,f=24;AAAA")) || !bytes.HasSuffix(transport.written, []byte("\x1b[c")) {
 		t.Fatalf("unexpected capability query %q", transport.written)
