@@ -14,6 +14,7 @@
 - [Usage](#usage)
 - [Options](#options)
 - [Rendering behavior](#rendering-behavior)
+- [Terminal rendering comparison](#terminal-rendering-comparison)
 - [Supported formats and limitations](#supported-formats-and-limitations)
 - [Architecture](#architecture)
 - [Development](#development)
@@ -98,6 +99,25 @@ The size is a maximum in terminal cells. Bors preserves the displayed image prop
 Automatic mode first requires an interactive stdout. When stdin and stdout are terminals, Bors uses the Kitty query action and DA1 response to identify Kitty Graphics Protocol support. A positive response selects Kitty; no response, unsupported output, or non-terminal stdin selects ANSI. Forced modes do not switch renderers.
 
 The Kitty renderer transmits PNG data directly in base64 chunks and converts JPEG/GIF input to PNG. It places the image in a cell-sized rectangle and lets the terminal advance the cursor after placement. The ANSI renderer uses upper-half blocks at resolution 2 and solid blocks at resolution 1; when the locale does not indicate UTF-8, resolution 1 uses the ASCII `#` glyph. ANSI output is an approximation: its appearance varies with fonts, color support, terminal cell geometry, and color palette. Transparent pixels are composited against black because the default terminal background cannot be queried reliably.
+
+## Terminal rendering comparison
+
+Foot does not support the Kitty Graphics Protocol, so Bors uses its ANSI fallback there. Kitty supports the protocol and renders the image natively. The captures show the same image at three requested widths.
+
+<table>
+  <thead>
+    <tr>
+      <th>Foot · ANSI fallback</th>
+      <th>Kitty · Kitty Graphics Protocol</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/foot-ansi-fallback.png" alt="Bors rendering with ANSI blocks in Foot" width="100%"></td>
+      <td><img src="docs/images/kitty-graphics-protocol.png" alt="Bors rendering natively with the Kitty Graphics Protocol" width="100%"></td>
+    </tr>
+  </tbody>
+</table>
 
 ## Supported formats and limitations
 
