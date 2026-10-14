@@ -1,6 +1,12 @@
-# Bors
+<h1 align="center">Bors</h1>
 
-Bors displays PNG, JPEG, and GIF images directly in a terminal. It uses the Kitty Graphics Protocol when automatic capability detection confirms support and otherwise draws ANSI-colored Unicode blocks.
+<p align="center">Display images in your terminal with Kitty Graphics Protocol and ANSI fallback.</p>
+
+<p align="center">
+  <img alt="Open Source" src="https://img.shields.io/badge/open%20source-yes-brightgreen">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://github.com/kristyancarvalho/bors/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/kristyancarvalho/bors"></a>
+</p>
 
 ## Contents
 
@@ -10,12 +16,31 @@ Bors displays PNG, JPEG, and GIF images directly in a terminal. It uses the Kitt
 - [Rendering behavior](#rendering-behavior)
 - [Supported formats and limitations](#supported-formats-and-limitations)
 - [Architecture](#architecture)
-- [Project structure](#project-structure)
 - [Development](#development)
 
 ## Build and install
 
-Requires Go 1.27.2 or later, Meson 1.2 or later, and Ninja.
+On Arch Linux, install Bors from the AUR with `paru` or `yay`:
+
+```sh
+paru -S bors
+```
+
+```sh
+yay -S bors
+```
+
+The AUR package sources are maintained under `packaging/aur`. To build and install the package manually from a stable release tag:
+
+```sh
+git clone https://github.com/kristyancarvalho/bors.git
+cd bors/packaging/aur
+makepkg -si
+```
+
+Stable GitHub releases are published to the AUR by the repository's release workflow. AUR publication requires the upstream GitHub repository to be public so that package builds can fetch the tagged source.
+
+To build from source, install Go 1.27.2 or later, Meson 1.2 or later, and Ninja:
 
 ```sh
 git clone https://github.com/kristyancarvalho/bors.git
@@ -32,15 +57,6 @@ meson setup build --prefix="$HOME/.local"
 meson compile -C build
 meson install -C build
 ```
-
-Arch Linux package sources are maintained under `packaging/aur`. After a stable public release is available, build and install the package from its release tag with:
-
-```sh
-cd packaging/aur
-makepkg -si
-```
-
-Stable GitHub releases are published to the AUR by the repository's release workflow. AUR publication requires the upstream GitHub repository to be public so that package builds can fetch the tagged source.
 
 Meson can run Bors with configured arguments. The option accepts a comma-separated argument list:
 
@@ -104,16 +120,6 @@ flowchart LR
     Input --> Kitty
     Input --> ANSI
     Terminal --> CLI
-```
-
-## Project structure
-
-```text
-cmd/bors/       CLI entry point
-internal/       CLI, input, terminal, and renderer packages
-tests/          Automated behavior and protocol tests
-meson.build     Build, install, test, and run targets
-packaging/aur/  Arch Linux package sources
 ```
 
 ## Development
