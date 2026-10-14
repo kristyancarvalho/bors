@@ -10,23 +10,39 @@ Bors displays PNG, JPEG, and GIF images directly in a terminal. It uses the Kitt
 - [Rendering behavior](#rendering-behavior)
 - [Supported formats and limitations](#supported-formats-and-limitations)
 - [Architecture](#architecture)
+- [Project structure](#project-structure)
 - [Development](#development)
 
 ## Build and install
 
-Requires Go 1.27.2 or later.
+Requires Go 1.27.2 or later, Meson 1.2 or later, and Ninja.
 
 ```sh
 git clone https://github.com/kristyancarvalho/bors.git
 cd bors
-go build -o bors ./cmd/bors
+meson setup build
+meson compile -C build
+./build/bors ~/Pictures/photo.png
 ```
 
-To install the checkout into the Go binary directory:
+Meson installs the binary using its configured prefix. To install under `~/.local`:
 
 ```sh
-go install ./cmd/bors
+meson setup build --prefix="$HOME/.local"
+meson compile -C build
+meson install -C build
 ```
+
+On Arch Linux, build and install the package from a public tagged source release with `makepkg -si`. The root `PKGBUILD` builds and tests the source through Meson.
+
+Meson can run Bors with configured arguments. The option accepts a comma-separated argument list:
+
+```sh
+meson configure build -Drun_args=--fallback,/path/to/photo.png
+meson compile -C build run
+```
+
+For arbitrary arguments, invoke `./build/bors` directly after compiling.
 
 ## Usage
 
@@ -62,12 +78,13 @@ The Kitty renderer transmits PNG data directly in base64 chunks and converts JPE
 
 ## Supported formats and limitations
 
-- PNG, JPEG, and GIF are accepted. Only the first GIF frame is rendered.
-- Input is limited to 64 MiB; decoded images are limited to 32,768 pixels per side and 40 million pixels total.
+- PNG, JPEG, and GIF are accepted. GIF frames are composited with their disposal rules and frame delays. Kitty uses terminal animation support; ANSI redraws frames in place. Infinite GIFs keep the ANSI process running until interrupted.
+- Input is limited to 64 MiB; decoded images are limited to 32,768 pixels per side and 40 million pixels total. Multi-frame GIF compositing is limited to 20 million full-frame pixels in total to bound memory use.
 - Kitty output requires a terminal that supports Kitty Graphics Protocol. Bors does not infer support from `TERM` alone.
+- Kitty animated GIF playback requires the terminal's Kitty animation support, introduced in Kitty 0.20. Automatic capability detection confirms graphics protocol support but does not check animation support.
 - Automatic Kitty detection is skipped when stdin is not a terminal, including when image data is piped to `bors -`.
 - The ANSI renderer uses ANSI color sequences with Unicode blocks by default and ASCII `#` for resolution 1 when UTF-8 is unavailable. Its output is not pixel-identical to the source image.
-- A project license has not been selected yet; see [the license issue](https://github.com/kristyancarvalho/bors/issues/3) before redistributing the project.
+- The project is distributed under the [MIT License](LICENSE).
 
 ## Architecture
 
@@ -82,6 +99,16 @@ flowchart LR
     Terminal --> CLI
 ```
 
+## Project structure
+
+```text
+cmd/bors/       CLI entry point
+internal/       CLI, input, terminal, and renderer packages
+tests/          Automated behavior and protocol tests
+meson.build     Build, install, test, and run targets
+PKGBUILD        Arch Linux source package
+```
+
 ## Development
 
 ```sh
@@ -90,6 +117,14 @@ go test ./...
 go test -race ./...
 go vet ./...
 go build ./...
+```
+
+Meson provides the same build and quality checks through its normal targets:
+
+```sh
+meson setup build
+meson compile -C build
+meson test -C build --print-errorlogs
 ```
 
 Automated protocol tests use fake terminal transports and validate emitted sequences. They do not establish compatibility with a real terminal emulator. Manual visual checks in Kitty-compatible and non-Kitty terminals remain separate from the automated test suite.

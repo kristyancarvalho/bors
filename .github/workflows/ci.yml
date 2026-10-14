@@ -19,13 +19,13 @@ jobs:
         with:
           go-version: '1.27.x'
           cache: true
+      - name: Install Meson and Ninja
+        run: sudo apt-get update && sudo apt-get install -y meson ninja-build
       - name: Check formatting
         run: test -z "$(gofmt -l $(git ls-files '*.go'))"
-      - name: Test
-        run: go test ./...
-      - name: Race test
-        run: go test -race ./...
-      - name: Vet
-        run: go vet ./...
+      - name: Configure Meson
+        run: meson setup build
       - name: Build
-        run: go build ./...
+        run: meson compile -C build
+      - name: Test, race test, vet, and build checks
+        run: meson test -C build --print-errorlogs

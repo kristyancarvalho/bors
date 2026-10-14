@@ -10,6 +10,7 @@ import (
 	_ "image/png"
 	"io"
 	"os"
+	"time"
 )
 
 const maxInputBytes = 64 << 20
@@ -17,9 +18,16 @@ const maxImagePixels = 40_000_000
 const maxImageSide = 32_768
 
 type Image struct {
+	Pixels    image.Image
+	Format    string
+	PNG       []byte
+	Frames    []Frame
+	LoopCount int
+}
+
+type Frame struct {
 	Pixels image.Image
-	Format string
-	PNG    []byte
+	Delay  time.Duration
 }
 
 func Load(reader io.Reader) (Image, error) {
@@ -76,6 +84,24 @@ func decode(reader io.Reader, original []byte) (Image, error) {
 	}
 	if config.Width <= 0 || config.Height <= 0 || config.Width > maxImageSide || config.Height > maxImageSide || int64(config.Width)*int64(config.Height) > maxImagePixels {
 		return Image{}, fmt.Errorf("image dimensions %dx%d exceed the supported limits", config.Width, config.Height)
+	}
+	if format == "gif" {
+		data := original
+		if data == nil {
+			if seeker, ok := reader.(io.Seeker); ok {
+				if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+					return Image{}, fmt.Errorf("rewind GIF before decoding: %w", err)
+				}
+			}
+			data, err = io.ReadAll(io.LimitReader(reader, maxInputBytes+1))
+			if err != nil {
+				return Image{}, fmt.Errorf("read GIF frames: %w", err)
+			}
+			if len(data) > maxInputBytes {
+				return Image{}, fmt.Errorf("image input exceeds the %d MiB limit", maxInputBytes>>20)
+			}
+		}
+		return decodeGIF(data, config)
 	}
 	var pixels image.Image
 	var decodedFormat string
